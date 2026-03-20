@@ -585,6 +585,30 @@ border-top: 1px solid rgba(255,255,255,0.05);
 <script>
 let scannerActive = false;
 let lastCode = null;
+let cameraPermissionGranted = localStorage.getItem('camPermission') === 'granted';
+
+// ─── Sonido beep (Web Audio API, sin archivos externos) ──────────────
+function playBeep() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(1480, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.08);
+    gain.gain.setValueAtTime(0.4, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.15);
+    setTimeout(() => ctx.close(), 300);
+  } catch(e) {}
+}
+
+function vibrate() {
+  if (navigator.vibrate) navigator.vibrate(80);
+}
 
 // ─── Toggle scanner ───────────────────────────────
 function toggleScanner() {
@@ -601,41 +625,39 @@ async function startScanner() {
   const overlay = document.getElementById('scan-overlay');
   const btn = document.getElementById('btn-scan');
 
-  // ── iOS / Safari requiere llamar getUserMedia ANTES que cualquier librería
-  // para que aparezca el diálogo de permiso del sistema operativo.
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    showError("Tu navegador no soporta acceso a la cámara. Usá Safari en iOS o Chrome en Android.");
-    return;
-  }
-
-  // Mostrar estado "solicitando permiso"
-  btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg> Esperando…`;
-  btn.disabled = true;
-
-  let stream;
-  try {
-    // Pedir permiso explícito — iOS muestra el popup del sistema aquí
-    stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: "environment" } },
-      audio: false
-    });
-    // Detener el stream de prueba; Quagga abrirá el suyo propio
-    stream.getTracks().forEach(t => t.stop());
-  } catch (err) {
-    btn.disabled = false;
-    btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg> Escanear`;
-    btn.className = 'btn btn-primary';
-    if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-      showError("Permiso de cámara denegado. En iOS: Ajustes → Safari → Cámara → Permitir. Luego recargá la página.");
-    } else if (err.name === 'NotFoundError') {
-      showError("No se encontró ninguna cámara en este dispositivo.");
-    } else {
-      showError("No se pudo acceder a la cámara: " + err.message);
+  // Si ya tenemos permiso guardado, saltamos el pedido
+  if (!cameraPermissionGranted) {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      showError("Tu navegador no soporta acceso a la cámara. Usá Safari en iOS o Chrome en Android.");
+      return;
     }
-    return;
+
+    btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg> Esperando…`;
+    btn.disabled = true;
+
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } }, audio: false });
+      stream.getTracks().forEach(t => t.stop());
+      // Guardar permiso para no volver a pedir
+      cameraPermissionGranted = true;
+      try { localStorage.setItem('camPermission', 'granted'); } catch(e) {}
+    } catch (err) {
+      btn.disabled = false;
+      btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg> Escanear`;
+      btn.className = 'btn btn-primary';
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        showError("Permiso de cámara denegado. En iOS: Ajustes → Safari → Cámara → Permitir. Luego recargá la página.");
+      } else if (err.name === 'NotFoundError') {
+        showError("No se encontró ninguna cámara en este dispositivo.");
+      } else {
+        showError("No se pudo acceder a la cámara: " + err.message);
+      }
+      return;
+    }
   }
 
-  // Permiso concedido — iniciar UI
+  // Permiso OK — iniciar UI
   btn.disabled = false;
   placeholder.style.display = 'none';
   container.style.display = 'block';
@@ -695,6 +717,8 @@ function onBarcodeDetected(result) {
   const code = result.codeResult.code;
   if (!code || code === lastCode) return;
   lastCode = code;
+  playBeep();
+  vibrate();
   stopScanner();
   searchProduct(code);
 }
@@ -723,6 +747,8 @@ function handleImageUpload(event) {
     src: URL.createObjectURL(file)
   }, result => {
     if (result && result.codeResult) {
+      playBeep();
+      vibrate();
       searchProduct(result.codeResult.code);
     } else {
       showError("No se encontró un código de barras en la imagen. Intentá con una foto más nítida.");
@@ -774,18 +800,14 @@ Respondé SOLO en JSON válido con esta estructura exacta, sin markdown ni backt
     );
 
     const data = await response.json();
-
     if (data.error) throw new Error(data.error.message);
 
     const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
     const clean = text.replace(/```json|```/g, '').trim();
 
     let product;
-    try {
-      product = JSON.parse(clean);
-    } catch {
-      throw new Error("No se pudo interpretar la respuesta de la IA.");
-    }
+    try { product = JSON.parse(clean); }
+    catch { throw new Error("No se pudo interpretar la respuesta de la IA."); }
 
     document.getElementById('loading').style.display = 'none';
     renderResult(code, product);
@@ -817,43 +839,17 @@ function renderResult(code, p) {
           </div>
           <span class="tag" style="margin-left:auto;">${p.tipo_codigo || 'Desconocido'}</span>
         </div>
-
         <div class="product-info">
           <div class="product-title">${p.producto_nombre || 'Producto sin identificar'}</div>
-
           <div class="product-meta">
-            ${p.categoria ? `
-            <div class="meta-row">
-              <span class="key">Categoría</span>
-              <span class="val"><span class="tag">${p.categoria}</span></span>
-            </div>` : ''}
-            ${p.marca ? `
-            <div class="meta-row">
-              <span class="key">Marca</span>
-              <span class="val">${p.marca}</span>
-            </div>` : ''}
-            ${p.es_envio_meli ? `
-            <div class="meta-row">
-              <span class="key">Tipo</span>
-              <span class="val"><span class="tag" style="background:rgba(255,230,0,0.1);color:var(--meli-yellow);border-color:rgba(255,230,0,0.25);">Envío MercadoLibre</span></span>
-            </div>` : ''}
-            ${p.numero_tracking ? `
-            <div class="meta-row">
-              <span class="key">Tracking</span>
-              <span class="val" style="font-family:'Syne',sans-serif;letter-spacing:0.5px;">${p.numero_tracking}</span>
-            </div>` : ''}
-            <div class="meta-row">
-              <span class="key">Descripción</span>
-              <span class="val">${p.descripcion || '—'}</span>
-            </div>
-            ${p.info_adicional ? `
-            <div class="meta-row">
-              <span class="key">Info extra</span>
-              <span class="val" style="color:var(--muted);">${p.info_adicional}</span>
-            </div>` : ''}
+            ${p.categoria ? `<div class="meta-row"><span class="key">Categoría</span><span class="val"><span class="tag">${p.categoria}</span></span></div>` : ''}
+            ${p.marca ? `<div class="meta-row"><span class="key">Marca</span><span class="val">${p.marca}</span></div>` : ''}
+            ${p.es_envio_meli ? `<div class="meta-row"><span class="key">Tipo</span><span class="val"><span class="tag" style="background:rgba(255,230,0,0.1);color:var(--meli-yellow);border-color:rgba(255,230,0,0.25);">Envío MercadoLibre</span></span></div>` : ''}
+            ${p.numero_tracking ? `<div class="meta-row"><span class="key">Tracking</span><span class="val" style="font-family:'Syne',sans-serif;letter-spacing:0.5px;">${p.numero_tracking}</span></div>` : ''}
+            <div class="meta-row"><span class="key">Descripción</span><span class="val">${p.descripcion || '—'}</span></div>
+            ${p.info_adicional ? `<div class="meta-row"><span class="key">Info extra</span><span class="val" style="color:var(--muted);">${p.info_adicional}</span></div>` : ''}
           </div>
         </div>
-
         <button class="btn btn-secondary" style="width:100%;" onclick="resetResult()">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.89"/></svg>
           Escanear otro código
